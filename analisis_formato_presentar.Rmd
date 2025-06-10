@@ -1,0 +1,1559 @@
+---
+title: "Escalando a través de los datos"
+subtitle: "Análisis de la base de 8a.nu"
+author: "Gonzalo Azuaga"
+output: html_document
+---
+
+```{r, results='hide', include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,       # No mostrar código
+  warning = FALSE,    # No mostrar warnings
+  message = FALSE     # No mostrar mensajes
+)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(skimr)
+library(gridExtra)
+library(grid)
+library(caret)
+```
+
+**Introducción**
+
+La idea de este Rmarkdown es poder analizar la mayor base de datos de escalada que se encuentra en libre disposición en la actualidad (**The Climbing Log Book Data** creada por David Cohen). La misma puede descargarse del siguiente link: [aqui](https://www.kaggle.com/datasets/dcohen21/8anu-climbing-logbook). Los datos fueron obtenidos a partir de scrappear la página www.8a.nu y corresponden al 13 de septiembre de 2017.
+
+Algunos comentarios a tener en cuenta: Los datos provienen de un sitio web donde los usuarios registran sus escaladas y las personas que se toman la molestia de registrar esta información se toman muy en serio su pasatiempo. Por lo tanto, los datos presentan un fuerte sesgo y tenderán a representar en exceso al escalador serio y fuerte. Esto implica que los grados más bajos no están bien representados en el análisis ya que los principiantes no suelen cargar sus ascensos y los escaladores más avanzados tienden a focalizarse en subir grados más altos. 
+
+Por último, los datos reflejan una mayor representación de regiones geográficas donde la plataforma 8a.nu es particularmente popular, principalmente en Europa, lo cual también debe tenerse en cuenta al interpretar los resultados.
+
+El set de datos se puede descargar como una base de datos *sqlite*, pero me resultó más rápido exportar cada de una las 4 tablas que integra la base de datos como archivos .csv individuales (utilizando SQLServer) para luego importarlos a R y analizarlos.
+
+Tablas:
+
+-   Ascents: Cuenta con alrededor de 4 millones de escaladas registradas, diferenciando entre la modalidad boulder y escalada deportiva.
+
+-   Grade: Una lista de cada uno de los diferentes grados de escalada.
+
+-   Usuarios: Aproximadamente 65,000 usuarios.
+
+-   Método: Describe el método utilizado para ascender en la escalada.
+
+```{r, warning=FALSE, message=F}
+ascents <- read.csv('bases/ascents.csv', sep = ',' , header = T)
+user <- read.csv('bases/user.csv', sep = ',' , header = T)
+grade <- read.csv('bases/grade.csv', sep = ',' , header = T)
+```
+
+Estructura de las bases
+
+```{r}
+# glimpse(ascents)
+# glimpse(user)
+# glimpse(grade)
+```
+
+**EDA**
+```{r}
+skim(user)
+```
+
+Como primera aproximación a los datos se busca saber cuál es el máximo grado de escalada deportiva y de boulder alcanzado por los usuarios. Para ello, se debe estimar la edad, experiencia, y máximo grado escalado por usuario y modalidad (redpoint, onsight/flash).
+
+```{r}
+user_ascents <- left_join(ascents, user %>%  
+                            select(id, sex, weight, height, occupation, birth, started, country),
+                            by = c('user_id' = 'id'))
+```
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+head(user_ascents)
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+user_ascents <- user_ascents %>% 
+  filter(sex != 255) %>% # solo hombre y mujer
+  mutate(climb_type = case_when(climb_type == 0 ~ 'Rope',
+                                climb_type == 1 ~ 'Boulder'))
+         
+user_ascents <- user_ascents %>% 
+mutate(sex = case_when(sex == 0 ~ 'Hombre',
+                       sex == 1 ~ 'Mujer'))
+
+#table(user_ascents$sex) #chequeo de recodificación
+
+#filtro anatómico
+user_ascents <- user_ascents %>% 
+  filter(weight>0, height>122, height<220) %>%  
+  mutate(birth = ymd(birth))
+
+date_down <- '2017-09-13' # fecha de descarga
+user_ascents <- user_ascents %>%   
+  filter(year(birth)>1930) %>% #personas menores a 87 años
+  mutate(age = trunc((birth %--% date_down) / years(1)))
+
+#BMI Body Mass Index (kg y metros) y experiencia
+user_ascents <- user_ascents %>% 
+  mutate(height = height/100,
+    bmi=weight/((height)^2),
+    year_down = year(date_down),
+    year_down = as.integer(year_down),
+    experience = year_down - started)
+
+#Eliminamos los casos de escalada en modalidad "Top rope"
+user_ascents <- user_ascents %>% 
+  filter(method_id %in% c(1,2,3,5)) %>% 
+  mutate(method_id =  case_when(method_id == 1 ~ "redpoint",
+                                method_id %in% c(2,3,5) ~ "onsight/flash"))
+
+
+#Cambiamos el formato de la fecha de ascensión
+user_ascents <- user_ascents %>% 
+  mutate(date = as_datetime(date, origin="1970-01-01"))
+
+```
+
+**Análisis gráfico de variables cuantitativas de interés del dataframe**
+
+```{r}
+a <-  ggplot(data = user_ascents, aes(x=height, color  = sex, fill = sex)) + 
+  geom_density(alpha = 0.3) + 
+  scale_color_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  scale_fill_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  labs(
+    x = "Altura (en mts.)",
+    y = " ") + theme_minimal() + theme(axis.title=element_text(size=8),legend.position = "none")
+
+b <- ggplot(data = user_ascents, aes(x=weight, color  = sex, fill = sex)) + 
+  geom_density(alpha = 0.3) + 
+  scale_color_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  scale_fill_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  labs(
+    x = "Peso (en Kg.)",
+    y = " ") + theme_minimal() + theme(axis.title=element_text(size=8),legend.position = "none")
+
+
+c <- ggplot(data = user_ascents, aes(x=age, color  = sex, fill = sex)) + 
+  geom_density(alpha = 0.3) + 
+  scale_color_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  scale_fill_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  labs(
+    x = "Edad (en años)",
+    y = " ") + theme_minimal() + theme(axis.title=element_text(size=8),legend.position = "none")
+
+d <- ggplot(data = filter(user_ascents, experience<age), aes(x=experience, color  = sex, fill = sex)) + 
+  geom_density(alpha = 0.3) + 
+  scale_color_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  scale_fill_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  labs(
+    x = "Experiencia (en años)",
+    y = " ") + theme_minimal() + theme(axis.title=element_text(size=8), 
+                                       legend.position = "bottom",
+                                       legend.text = element_text(size =8))
+
+grid.arrange(a,b,c,d, ncol=2, nrow=2, widths = c(9,9), heights = c(11,11),
+                   top = textGrob(" ",
+     gp=gpar(fontsize=11, fontface = "bold"),
+     hjust = 0.6),
+    bottom = textGrob(
+    "Fuente: 8a.nu",
+    gp = gpar(fontface = "bold", fontsize = 8),
+    hjust = 1,
+    x = 1))
+```
+
+
+**Estimación del grado máximo escalado por usuario**
+
+Para cada usuario se identificó el máximo grado alcanzado en modalidad redpoint y onsight/flash, tanto en escalada deportiva como en boulder. Junto con el grado, se extrajo el año en que fue registrado ese ascenso como representación del momento de mayor rendimiento declarado.
+
+A partir de esa información, se estimó el tiempo requerido para alcanzar dicho grado calculando la diferencia entre:
+
+- El año del ascenso al máximo grado, y
+- El año en que la persona declaró haber comenzado a escalar.
+
+Este indicador permite evaluar la velocidad de progresión individual hasta el mayor nivel registrado en la base de datos. Se excluyeron valores extremos o inconsistentes (por ejemplo, tiempos negativos o mayores a 30 años) para evitar distorsión en los resultados.
+
+```{r}
+
+options(scipen = 99)
+
+# Por usuario, tipo de escalada y método nos quedamos el grado mayor escalado y en el menor año.
+max_grade <- user_ascents %>%
+  group_by(user_id, climb_type, method_id) %>%
+  slice(which.max(grade_id), which.min(year)) %>% 
+  slice(1)
+
+
+# Filtramos por escalada en roca y traemos la escala de graduación francesa
+max_grade_rope <- max_grade %>% 
+  filter(climb_type=='Rope') %>% 
+  left_join(grade %>% select (id, fra_routes), by = c('grade_id' = 'id'))
+
+
+`%nin%` = Negate(`%in%`)
+
+max_grade_rope_plot <- max_grade_rope %>% 
+  filter(!is.na(fra_routes), fra_routes != '-', fra_routes != '1', fra_routes %nin% c('2','2a', '3a', '3c', '4a','4b','4c'))
+
+# Visualización
+ggplot(data = filter(max_grade_rope_plot, method_id=="redpoint")) + geom_bar(aes(fra_routes, fill = "6633FF")) +
+    labs(x = " ",
+       y = " ",
+       title = "Distribución del máximo grado escalado trabajado en roca",
+       caption = "Fuente: 8a.nu") + guides (fill = F) + 
+  theme_classic() +
+  theme(axis.title = element_text(face ="bold", size = 12),
+        axis.text.x = element_text(size = 10, angle = 45, hjust = .5, vjust = .5)) 
+```
+
+```{r}
+# Filtramos por escalada en boulder y traemos la escala de graduación francesa
+max_grade_boul <- max_grade %>% 
+  filter(climb_type=='Boulder') %>% 
+  left_join(grade %>% select (id, usa_boulders), by = c('grade_id' = 'id'))
+
+#Recodificamos los grados mal ingresados y los ordenamos
+#table(max_grade_boul$usa_boulders)
+
+max_grade_boul <- max_grade_boul %>% 
+  mutate(usa_boulders = case_when(usa_boulders == 'V3/4' ~ 'V3/V4',
+                                  usa_boulders == 'V8/9' ~ 'V8/V9',
+                                  TRUE ~ usa_boulders))
+
+max_grade_boul_plot <- max_grade_boul %>% 
+  filter(!is.na(usa_boulders), usa_boulders %nin% c('V0', 'V0-', 'VB','V17'), usa_boulders != ' ')
+ 
+max_grade_boul_plot$usa_boulders = as.factor(max_grade_boul_plot$usa_boulders)
+
+max_grade_boul_plot$usa_boulders = factor(max_grade_boul_plot$usa_boulders, levels = c('V0','V1','V2','V3', 'V3/V4','V4', 'V4/V5', 'V5', 'V5/V6','V6','V7','V8','V8/V9','V9','V10','V11','V12','V13','V14','V15','V16','V17'))
+
+#Gráfico
+ggplot(data = filter(max_grade_boul_plot, !is.na(usa_boulders) & method_id=="redpoint")) + geom_bar(aes(usa_boulders, fill = "663
+ 3FF")) +
+    labs(x = " ",
+       y = " ",
+       title = "Distribución del máximo grado escalado trabajado en boulder",
+       caption = "Fuente: 8a.nu") + guides (fill = F) + 
+  theme_classic() +
+  theme(axis.title = element_text(face ="bold", size = 12),
+        axis.text.x = element_text(size = 10, angle = 45, hjust = .5, vjust = .5)) 
+```
+
+A partir de ambos gráficos se observa que la gran mayoría de las personas reportaron como su máximo grado de escalada en roca el 8a, mientras que en boulder V6.
+
+**Análisis de Escalada en roca**
+
+```{r, results='hide'}
+# Sobre la base de máximo grado alcanzado en el mínimo año por usuario
+max_grade_rope <- max_grade_rope %>%
+  mutate(anio_requerido = year - started) %>% 
+  select(sex,id, fra_routes, date, started, anio_requerido, everything())
+
+#hist(max_grade_rope$anio_requerido)
+summary(max_grade_rope$anio_requerido)
+
+#hay problemas de consistencia en la variable creada.
+
+max_grade_sim <- max_grade_rope %>% 
+  filter(started %in% c(1960:2017)) %>% # este filtro es usado por otro analista.
+  filter(anio_requerido>0)
+  
+summary(max_grade_sim$anio_requerido)
+#hist(max_grade_sim$anio_requerido)
+
+#Luego de quedarnos con los datos que presuntamente son válidos, debemos estimar el tiempo promedio requerido para alcanzar cada grado en función de cada método.
+
+max_grade_time <- max_grade_sim %>% 
+  group_by(fra_routes, sex,method_id) %>% 
+  summarise(Tiempo_medio = round(mean(anio_requerido, na.rm = T), 1),
+            Desvio = round(sd(anio_requerido), 1))
+
+```
+
+```{r}
+g_tiempo_requerido <- ggplot(data = filter(max_grade_time, fra_routes %nin% c('3a','4a','4b','4c','-','5a','5b','5c','9b+','9c') & method_id =="redpoint"), aes(x = fra_routes, y = Tiempo_medio,group = sex, color = sex)) + geom_line(alpha = 1.5, aes(linetype = sex)) +
+  geom_ribbon(aes(ymin = Tiempo_medio - Desvio, ymax= Tiempo_medio + Desvio, fill = sex), alpha = 0.15, color = "transparent") +
+  labs(title = 'Tiempo promedio requerido para alcanzar un determinado grado',
+       x= 'Grado ensayado',
+       y= 'Años requeridos',
+       caption =  'Fuente: 8a.nu') + 
+  scale_color_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), guide = "none") +
+  scale_fill_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"))+
+  guides(color = guide_legend(title = NULL), linetype = guide_legend(title = NULL), fill = guide_legend(title = NULL)) +
+  theme_minimal()
+
+g_tiempo_requerido
+
+ggsave('C:/Gonzalo/8a.nu/escalada_analisis/Graficos/g_tiempo_requerido.jpg', g_tiempo_requerido, width = 12, height = 7)
+```
+
+```{r}
+max_grade_7a_red <- max_grade_sim %>% 
+  filter(fra_routes=="7a" & method_id == "redpoint")
+
+max_grade_7a_fla <- max_grade_sim %>% 
+  filter(fra_routes=="7a" & method_id == "onsight/flash")
+
+```
+
+```{r }
+porcentaje_df <- max_grade_7a_red %>%
+  group_by(anio_requerido, sex) %>%
+  summarise(percentage = (n() / nrow(max_grade_7a_red)) * 100)
+
+
+ggplot(data = porcentaje_df, aes(x = anio_requerido, y = percentage, fill = sex)) +
+  geom_bar(stat = "identity", position = "dodge", alpha =0.5, color ="transparent")+ 
+  geom_line(aes(x=anio_requerido, y= percentage, group=sex, color =sex), size = 0.8, alpha = 0.5) +
+  labs(
+    title = 'Distribución del tiempo requerido para alcanzar 7a trabajado',
+    x= 'Años escalando',
+    y= '% de usuarios',
+    caption =  'Fuente: 8a.nu',
+    fill = 'Sexo') + 
+  scale_color_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), name = NULL) +
+  scale_fill_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), name = NULL) +
+  theme_minimal()
+
+
+
+# porcentaje_df <- max_grade_7a_fla %>%
+#   group_by(anio_requerido, sex) %>%
+#   summarise(percentage = (n() / nrow(max_grade_7a_fla)) * 100)
+# 
+# 
+# ggplot(data = porcentaje_df, aes(x = anio_requerido, y = percentage, fill = sex)) +
+#   geom_bar(stat = "identity", position = "dodge", alpha =0.5, color ="transparent")+ 
+#   geom_line(aes(x=anio_requerido, y= percentage, group=sex, color =sex), size = 0.8, alpha = 0.5) +
+#   labs(
+#     title = 'Distribución del tiempo requerido para alcanzar 7a a vista/flash',
+#        x= 'Años escalando',
+#        y= '% de usuarios',
+#        caption =  'Fuente: 8a.nu',
+#        fill ="Sexo") + 
+#   scale_color_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), name = NULL) +
+#   scale_fill_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), name = NULL) +
+#   theme_minimal()
+```
+
+Al profundizar en el tiempo que han necesitado los escaladores para alcanzar un grado concreto (como el 7a), se observa que la gran mayoría lo ha alcanzado entre los 2 y 3 años, mientras que el promedio indica unos 5. Esto se debe a la gran variabilidad que existe en los datos relevados.
+
+```{r}
+max_grade_8a <- max_grade_sim %>% 
+  filter(fra_routes=="8a")
+```
+
+```{r}
+porcentaje_df <- max_grade_8a %>%
+  group_by(anio_requerido, sex) %>%
+  summarise(percentage = (n() / nrow(max_grade_8a)) * 100)
+
+
+g_8a <- ggplot(data = porcentaje_df, aes(x = anio_requerido, y = percentage, fill = sex)) +
+  geom_bar(stat = "identity", position = "dodge", alpha =0.5, color ="transparent")+ 
+  geom_line(aes(x=anio_requerido, y= percentage, group=sex, color =sex), size = 0.8, alpha = 0.5) +
+  labs(
+    title = 'Distribución del tiempo requerido para alcanzar 8a',
+    x= 'Años escalando',
+    y= '% de usuarios',
+    caption =  'Fuente: 8a.nu', 
+    fill = "Sexo") +  
+   scale_color_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), name = NULL) +
+  scale_fill_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), name = NULL) +
+  theme_minimal()
+
+g_8a
+
+ggsave('C:/Gonzalo/8a.nu/escalada_analisis/Graficos/g_8a.jpg', g_8a, width = 12, height = 7)
+
+```
+
+```{r}
+# Hombres
+flash_onsight_h <-  max_grade_rope %>%
+  filter(sex == "Hombre") %>% 
+  pivot_wider(
+    id_cols = user_id,
+    names_from = method_id,
+    values_from = grade_id,
+    names_prefix = "grade_id_"
+  ) 
+
+flash_onsight_h <- na.omit(flash_onsight_h)
+
+flash_onsight_h <- flash_onsight_h %>% 
+  group_by(grade_id_redpoint) %>% 
+  mutate(grade_onsight_mean = round(mean(`grade_id_onsight/flash`, na.rm = T),0),
+         grade_onsight_sd= round(sd(`grade_id_onsight/flash`),0),
+         lim_sup_onsight = round(grade_onsight_mean+grade_onsight_sd,0),
+         lim_inf_onsight = round(grade_onsight_mean-grade_onsight_sd,0))
+
+
+# como no existe el grado 48 y 61 en el dataset de grade, hay que reemplazarlos por el valor más cercano.
+
+var_modificar <- c("grade_id_redpoint", "grade_onsight_mean","lim_sup_onsight","lim_inf_onsight")
+
+flash_onsight_h <- flash_onsight_h %>% 
+   mutate_at(vars(var_modificar), ~ ifelse(. == 48, 47,
+                                                   ifelse(. == 61, 60, 
+                                                          ifelse(. == 74, 73, .)))) %>% 
+  select(c(3,4,6,7))
+
+
+flash_onsight_h_plot <- left_join(flash_onsight_h, grade %>%  
+                                    select(id, fra_routes), by = c("grade_id_redpoint" = "id")) %>% 
+  rename(fra_redpoint = fra_routes)
+
+
+flash_onsight_h_plot <- left_join(flash_onsight_h_plot, grade %>%  
+                                    select(id, fra_routes), by = c("grade_onsight_mean" = "id")) %>% 
+  rename(fra_onsight_mean = fra_routes)
+
+
+flash_onsight_h_plot <- left_join(flash_onsight_h_plot, grade %>%  
+                                    select(id, fra_routes), by = c("lim_sup_onsight" = "id")) %>% 
+  rename(fra_onsight_lim_sup = fra_routes)
+
+
+flash_onsight_h_plot <- left_join(flash_onsight_h_plot, grade %>%  
+                                    select(id, fra_routes), by = c("lim_inf_onsight" = "id")) %>% 
+  rename(fra_onsight_lim_inf = fra_routes) %>% select(contains("fra"))
+
+flash_onsight_h_plot <- flash_onsight_h_plot %>% 
+  mutate(across(everything(), as.factor))
+  
+
+flash_onsight_h_plot <- flash_onsight_h_plot %>% 
+  mutate(fra_onsight_lim_inf = case_when(fra_onsight_lim_inf == "6" ~ "6a",
+                                         TRUE ~ fra_onsight_lim_inf ))
+
+```
+
+```{r}
+# Recodificar variables para que queden con mismas dimensiones
+
+# table(flash_onsight_h_plot$fra_onsight_mean)
+# table(flash_onsight_h_plot$fra_onsight_lim_sup)
+# table(flash_onsight_h_plot$fra_onsight_lim_inf)
+
+var_modificar <- c('fra_onsight_mean', 'fra_onsight_lim_sup', 'fra_onsight_lim_inf')
+
+
+flash_onsight_h_plot <- flash_onsight_h_plot %>% 
+   mutate_at(vars(var_modificar), ~ case_when(
+      . == '6a+/6b' ~ '6a+',
+      . == '6a/+' ~ '6a',
+      . == '6c+/7a' ~ '6c+',
+      . == '6b/+' ~ '6b',
+      . == '6b+/6c' ~ '6b+',
+      . == '6c/+' ~ '6c',
+      . == '7a/+' ~ '7a',
+      . == '7a+/7b' ~ '7a+',
+      . == '7b/+' ~ '7b',
+      . == '7b+/7c' ~ '7b+',
+      . == '7c/+' ~ '7c',
+      . == '7c+/8a' ~ '7c+',
+      . == '8a/+' ~ '8a',
+      . == '8a+/8b' ~ '8a+',
+      . == '8b/+' ~ '8b',
+      . == '8c/+' ~ '8c',
+      . == '8c+/9a' ~ '8c+',
+      TRUE ~ .
+   ))
+
+```
+
+```{r}
+# Mujeres
+flash_onsight_m <-  max_grade_rope %>%
+  filter(sex == "Mujer") %>% 
+  pivot_wider(
+    id_cols = user_id,
+    names_from = method_id,
+    values_from = grade_id,
+    names_prefix = "grade_id_"
+  ) 
+
+flash_onsight_m <- na.omit(flash_onsight_m)
+
+flash_onsight_m <- flash_onsight_m %>% 
+  group_by(grade_id_redpoint) %>% 
+  mutate(grade_onsight_mean = round(mean(`grade_id_onsight/flash`, na.rm = T),0),
+         grade_onsight_sd= round(sd(`grade_id_onsight/flash`),0),
+         lim_sup_onsight = round(grade_onsight_mean+grade_onsight_sd,0),
+         lim_inf_onsight = round(grade_onsight_mean-grade_onsight_sd,0))
+  
+var_modificar <- c("grade_id_redpoint", "grade_onsight_mean","lim_sup_onsight","lim_inf_onsight")
+
+
+# como no existe el grado 48, 61, 74 en el dataset de grade, hay que reemplazarlos por el valor más cercano.
+
+flash_onsight_m <- flash_onsight_m %>% 
+   mutate_at(vars(var_modificar), ~ ifelse(. == 48, 47,
+                                                   ifelse(. == 61, 60, 
+                                                          ifelse(. == 74, 73, .)))) %>% 
+  select(c(3,4,6,7))
+
+flash_onsight_m_plot <- left_join(flash_onsight_m, grade %>%  
+                                    select(id, fra_routes), by = c("grade_id_redpoint" = "id")) %>% 
+  rename(fra_redpoint = fra_routes)
+
+
+flash_onsight_m_plot <- left_join(flash_onsight_m_plot, grade %>%  
+                                    select(id, fra_routes), by = c("grade_onsight_mean" = "id")) %>% 
+  rename(fra_onsight_mean = fra_routes)
+
+
+flash_onsight_m_plot <- left_join(flash_onsight_m_plot, grade %>%  
+                                    select(id, fra_routes), by = c("lim_sup_onsight" = "id")) %>% 
+  rename(fra_onsight_lim_sup = fra_routes)
+
+
+flash_onsight_m_plot <- left_join(flash_onsight_m_plot, grade %>%  
+                                    select(id, fra_routes), by = c("lim_inf_onsight" = "id")) %>% 
+  rename(fra_onsight_lim_inf = fra_routes) 
+
+
+flash_onsight_m_plot <- flash_onsight_m_plot %>% 
+  mutate(across(everything(), as.factor))
+  
+var_modificar <- c('fra_onsight_mean', 'fra_onsight_lim_sup', 'fra_onsight_lim_inf')
+
+flash_onsight_m_plot <- flash_onsight_m_plot %>% 
+  mutate_at(vars(var_modificar), ~ case_when(. == "6" ~ "6a",
+                                         TRUE ~ .))
+```
+
+```{r}
+# Recodificar variables para que queden con mismas dimensiones
+
+# table(flash_onsight_m_plot$fra_onsight_mean)
+# table(flash_onsight_m_plot$fra_onsight_lim_sup)
+# table(flash_onsight_m_plot$fra_onsight_lim_inf)
+
+
+flash_onsight_m_plot <- flash_onsight_m_plot %>% 
+   mutate_at(vars(var_modificar), ~ case_when(
+      . == '6a+/6b' ~ '6a+',
+      . == '6a/+' ~ '6a',
+      . == '6c+/7a' ~ '6c+',
+      . == '6b/+' ~ '6b',
+      . == '6b+/6c' ~ '6b+',
+      . == '6c/+' ~ '6c',
+      . == '7a/+' ~ '7a',
+      . == '7a+/7b' ~ '7a+',
+      . == '7b/+' ~ '7b',
+      . == '7b+/7c' ~ '7b+',
+      . == '7c/+' ~ '7c',
+      . == '7c+/8a' ~ '7c+',
+      . == '8a/+' ~ '8a',
+      . == '8a+/8b' ~ '8a+',
+      . == '8b/+' ~ '8b',
+      . == '8c/+' ~ '8c',
+      . == '8c+/9a' ~ '8c+',
+      TRUE ~ .
+   ))
+
+```
+
+```{r}
+# Gráfico combinado
+
+# Combinar los dataframes de hombres y mujeres, añadiendo una columna 'gender'
+combined_data <- bind_rows(
+  flash_onsight_h_plot %>% mutate(sexo = "Hombre"),
+  flash_onsight_m_plot %>% mutate(sexo = "Mujer")
+)
+
+# Crear el gráfico combinando los datos de hombres y mujeres
+g_vista_flash <- ggplot(data=filter(combined_data, fra_redpoint %nin% c('3a','4a','4b','4c','-','5a','5b','5c','9b+','9c')), 
+       aes(x = fra_redpoint, y = fra_onsight_mean, color = sexo)) + 
+  geom_point(position = position_dodge(width = 0.5), size = 2) + 
+  geom_errorbar(
+    aes(ymin = fra_onsight_lim_inf, ymax = fra_onsight_lim_sup),
+    position = position_dodge(width = 0.5),
+    width = 0.2
+  ) +
+  labs(
+    title = "Grado a vista/flash promedio vs. máximo grado ensayado",
+    x = "Grado ensayado",
+    y = "Grado a vista/flash promedio",
+    caption = "Fuente: 8a.nu"
+  ) +
+  scale_color_manual(values = c("Mujer" = "#FF88A8", "Hombre" = "#88C0FF")) + 
+  guides(color = guide_legend(title = NULL)) +theme_minimal()
+
+g_vista_flash
+
+ggsave('C:/Gonzalo/8a.nu/escalada_analisis/Graficos/g_vista_flash.jpg', g_vista_flash, width = 12, height = 7)
+
+```
+
+Este gráfico muestra la relación entre el grado máximo alcanzado en modalidad redpoint (ensayado) y el grado máximo en modalidad onsight/flash. La concentración de puntos a lo largo de la diagonal es esperable: quienes alcanzan un alto grado ensayado tienden a mostrar también un alto rendimiento a vista/flash.
+
+Sin embargo, también se observa una notable dispersión alrededor de esa diagonal. Esta variabilidad indica que, para un mismo grado redpoint, existen diferencias marcadas en el grado alcanzado a vista, y viceversa. Los límites superior e inferior representan los valores máximos y mínimos observados para cada nivel redpoint, no un desvío estadístico.
+
+```{r}
+#Filtramos por BMI para evitar outliers
+user_grade_plot <- max_grade_sim %>% 
+  filter(!is.na(bmi), !is.na(fra_routes), bmi>=12, bmi<=40, fra_routes %nin% c('-', '3a', '4a', '4b', '4c')) %>% 
+  group_by(fra_routes, sex) %>% 
+  mutate(mean_bmi = mean(bmi),
+         sd_bmi = sd(bmi))
+```
+
+```{r, message=FALSE, warning=FALSE}
+ ggplot(data = filter(user_grade_plot,fra_routes %nin% c('5a','5b','5c', '9b+','9c')), aes(x = fra_routes, y = mean_bmi, group = sex, color = sex)) +  geom_line(alpha = 1.5, aes(linetype = sex)) +
+  geom_ribbon(aes(ymin = mean_bmi - sd_bmi, ymax= mean_bmi + sd_bmi, fill = sex), alpha = 0.15, color = "transparent") +
+  labs(title = 'Máximo grado escalado vs. BMI',
+       x= ' ',
+       y= 'Body Mass Index',
+       caption =  'Fuente: 8a.nu',
+       color = 'Sexo') + 
+  scale_color_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"), guide =F) +
+  scale_fill_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8"))+
+  guides(color = guide_legend(title = NULL), linetype = guide_legend(title = NULL), fill = guide_legend(title = NULL)) +
+  theme_minimal()
+```
+
+A partir del gráfico anterior se observa que, a medida que aumenta el máximo grado de escalada alcanzado el BMI medio tiende a reducirse como también su variabilidad, aunque de forma leve. Esto se observa en las bandas sombreadas que reflejan el rango de ±1 desvío estándar, proporcionando una medida de dispersión. Cabe resaltar que, para los grados más elevados existen pocos registros, por tal las estimaciones están muy influenciadas por la fisiología de esas personas.
+
+Las tendencias mencionadas pareciesen tener más efecto en el caso de los hombres que de las mujeres. Particularmente, llama la atención el pico que se observa en el grado de 8a+ reportado por las mujeres, podría tratarse de un posible outlier que esté afectando la media como los desvíos standards estimados.
+
+```{r}
+user_grade_plot %>% 
+  filter(sex=='Mujer', fra_routes == '8a+') %>% 
+  select(fra_routes, height, weight, bmi) %>% 
+  arrange(-bmi) %>% 
+  head(n=15)
+```
+
+Se observa que dos personas reportaron haber escalado 8a+ como máximo grado y tienen un peso de 88 kg y 100 kg, midiendo 1,50 mts y 1,74 mts respectivamente, lo que genera valores bastante elevados de BMI comparados con el resto de las mujeres que escalaron dicho grado.
+
+*Máximo grado vs. altura*
+
+```{r}
+# Hombres
+
+# Filtramos la base
+user_grade_plot_h <- user_grade_plot %>%
+  filter(sex == 'Hombre', experience < age)
+
+user_grade_plot_mod <- user_grade_plot_h
+
+# Crear intervalos de altura nuevamente
+
+intervalos <- 3
+puntos_corte <- quantile(user_grade_plot_h$height, probs = seq(0, 1, length.out = intervalos + 1))
+user_grade_plot_h$intervalo_altura <- cut(user_grade_plot_h$height, breaks = puntos_corte, include.lowest = TRUE)
+
+user_grade_plot_h <- user_grade_plot_h %>%
+  group_by(experience, intervalo_altura) %>%
+  summarise(avg_grade = round(mean(grade_id, na.rm = TRUE),0),
+            grade_sd= round(sd(grade_id, na.rm = T),0),
+            lim_sup = avg_grade + grade_sd,
+            lim_inf = avg_grade - grade_sd) %>%
+  ungroup()
+  
+
+user_grade_plot_h <- user_grade_plot_h %>% 
+  mutate_at(vars('avg_grade','lim_sup', 'lim_inf'), ~ case_when(. == 48 ~ 47,
+                                                                . == 61 ~ 60,
+                                                                . == 74 ~ 73,
+                                                                TRUE  ~  .))
+
+# Traer graduación francesa
+
+user_grade_plot_h <- left_join(user_grade_plot_h, grade %>%  
+                                    select(id, fra_routes), by = c("avg_grade" = "id")) %>% 
+  rename(fra_redpoint = fra_routes)
+
+
+user_grade_plot_h <- left_join(user_grade_plot_h, grade %>%  
+                                    select(id, fra_routes), by = c("lim_sup" = "id")) %>% 
+  rename(lim_sup_ = fra_routes) 
+
+user_grade_plot_h <- left_join(user_grade_plot_h, grade %>%  
+                                    select(id, fra_routes), by = c("lim_inf" = "id")) %>% 
+  rename(lim_inf_ = fra_routes) 
+
+
+# vector para usar en el grafico
+
+graduacion_grafico <- grade %>% 
+  select(id, fra_routes)
+
+graduacion_vector <- setNames(graduacion_grafico$fra_routes, graduacion_grafico$id)
+
+```
+
+```{r}
+# Graficar el promedio del grado escalado vs. experiencia, usando los valores numéricos de grade_id pero mostrando las etiquetas de fra_redpoint
+
+g_user_grade_plot_h <- user_grade_plot_h %>% 
+  filter(avg_grade>36)
+
+
+g_intervalo_altura <- ggplot(data = filter(g_user_grade_plot_h, experience<=30),  aes(x = experience, y = avg_grade, color = intervalo_altura)) + 
+  geom_line(size = 1) +  
+  geom_point(size = 2) +
+  geom_ribbon(aes(ymin = lim_inf, ymax = lim_sup, fill = intervalo_altura),alpha = 0.2, color = NA) +
+  scale_x_continuous(breaks = seq(0, 30, by = 2.5)) +  # Mostrar marcas cada 2.5 unidades
+  scale_y_continuous(breaks = as.numeric(names(graduacion_vector)), labels = graduacion_vector) +         scale_color_viridis_d(option = "viridis") +
+  scale_fill_viridis_d(option = 'viridis', alpha = 0.8) +
+  labs(
+    title = 'Máximo grado escalado vs. experiencia',
+    subtitle = 'Hombres',
+    x = 'Años de experiencia escalando',
+    y = 'Máximo grado escalado (promedio)',
+    color = 'Intervalo de altura',
+    caption = 'Fuente: 8a.nu.'
+  ) +   guides(color = guide_legend(title = "Intervalo de altura"),
+         fill = guide_legend(title = "Intervalo de altura")) +
+  theme_minimal()
+
+g_intervalo_altura
+
+ggsave('C:/Gonzalo/8a.nu/escalada_analisis/Graficos/g_intervalo_altura.jpg', g_intervalo_altura, width = 12, height = 7)
+
+```
+
+```{r, results='hide'}
+# Mujeres
+
+# Filtramos la base
+user_grade_plot_m <- user_grade_plot %>%
+  filter(sex == 'Mujer', experience < age)
+
+# Crear intervalos de altura nuevamente
+
+intervalos <- 3
+puntos_corte <- quantile(user_grade_plot_m$height, probs = seq(0, 1, length.out = intervalos + 1))
+user_grade_plot_m$intervalo_altura <- cut(user_grade_plot_m$height, breaks = puntos_corte, include.lowest = TRUE)
+
+user_grade_plot_m <- user_grade_plot_m %>%
+  group_by(experience, intervalo_altura) %>%
+  summarise(avg_grade = round(mean(grade_id, na.rm = TRUE),0),
+            grade_sd= round(sd(grade_id, na.rm = T),0),
+            lim_sup = avg_grade + grade_sd,
+            lim_inf = avg_grade - grade_sd) %>%
+  ungroup()
+  
+
+user_grade_plot_m <- user_grade_plot_m %>% 
+  mutate_at(vars('avg_grade','lim_sup', 'lim_inf'), ~ case_when(. == 48 ~ 47,
+                                                                . == 61 ~ 60,
+                                                                . == 74 ~ 73,
+                                                                TRUE  ~  .))
+
+# Traer graduación francesa
+
+user_grade_plot_m <- left_join(user_grade_plot_m, grade %>%  
+                                    select(id, fra_routes), by = c("avg_grade" = "id")) %>% 
+  rename(fra_redpoint = fra_routes)
+
+
+user_grade_plot_m <- left_join(user_grade_plot_m, grade %>%  
+                                    select(id, fra_routes), by = c("lim_sup" = "id")) %>% 
+  rename(lim_sup_ = fra_routes) 
+
+user_grade_plot_m <- left_join(user_grade_plot_m, grade %>%  
+                                    select(id, fra_routes), by = c("lim_inf" = "id")) %>% 
+  rename(lim_inf_ = fra_routes) 
+
+
+var_modificar <- c("fra_redpoint", "lim_sup_", "lim_inf_")
+
+# Recodificamos las variables de grado francés
+
+user_grade_plot_m <- user_grade_plot_m %>% 
+   mutate_at(vars(var_modificar), ~ case_when(
+      . == '6a/+' ~ '6a+',
+      . == '6' ~ '6a',
+      . == '6a+/6b' ~ '6b',
+      . == '6b/+' ~ '6b+',
+      . == '6b+/6c' ~ '6c',
+      . == '6c/+' ~ '6c+',
+      . == '6c+/7a' ~ '7a',
+      . == '7a/+' ~ '7a+',
+      . == '7a+/7b' ~ '7b',
+      . == '7b/+' ~ '7b+',
+      . == '7b+/7c' ~ '7c',
+      . == '7c/+' ~ '7c+',
+      . == '7c+/8a' ~ '8a',
+      . == '8a/+' ~ '8a+',
+      . == '8a+/8b' ~ '8b',
+      . == '8b/+' ~ '8b+',
+      . == '8b+/c' ~ '8c',
+      . == '8c/+' ~ '8c+',
+      . == '8c+/9a' ~ '9a',
+      TRUE ~ .))
+
+user_grade_plot_m <- na.omit(user_grade_plot_m)
+
+
+# Asegurarnos de que 'fra_redpoint' esté ordenado correctamente como un factor
+user_grade_plot_m$fra_redpoint <- factor(user_grade_plot_m$fra_redpoint, 
+                                       levels = c('5a', '5b', '5c', '6a', '6a+', '6b', '6b+', '6c', '6c+', 
+                                                  '7a', '7a+', '7b', '7b+', '7c', '7c+', '8a', '8a+', '8b', 
+                                                  '8b+', '8c', '9a', '9a+', '9b'))
+
+# Graficar el promedio del grado escalado vs. experiencia, usando los valores numéricos de grade_id pero mostrando las etiquetas de fra_redpoint
+
+# ggplot(data = filter(user_grade_plot_m, experience<=30),  aes(x = experience, y = as.numeric(fra_redpoint), color = intervalo_altura)) + 
+#   geom_line(size = 1) +  
+#   geom_point(size = 2) +
+#   scale_x_continuous(breaks = seq(0, 30, by = 2.5)) +  # Mostrar marcas cada 2.5 unidades
+#   scale_y_continuous(
+#     breaks = 1:length(levels(user_grade_plot_m$fra_redpoint)),  # Usar los índices numéricos de los niveles
+#     labels = levels(user_grade_plot_m$fra_redpoint)  # Mostrar las etiquetas de los grados
+#   ) +  scale_color_viridis_d(option = "viridis") +
+#   labs(
+#     title = 'Máximo grado escalado vs. experiencia',
+#     subtitle = 'Mujeres',
+#     x = 'Años de experiencia escalando',
+#     y = 'Máximo grado escalado (promedio)',
+#     color = 'Intervalo de altura',
+#     caption = 'Fuente: 8a.nu.'
+#   ) + guides(color = guide_legend(title = NULL)) +
+#   theme_minimal()
+
+```
+
+En el caso de los hombres, se observa que aquellos con menor estatura (aproximadamente entre 1,30 m y 1,75 m) tienden a mostrar una progresión más acelerada durante los primeros años de experiencia en la escalada. No obstante, estas tendencias deben interpretarse con cautela, debido al elevado nivel de variabilidad en los datos y a la posible presencia de sesgos muestrales.
+
+En el caso de las mujeres, se optó por no presentar este análisis debido al menor volumen de registros disponibles y al alto grado de ruido observado en los datos, lo que impide extraer conclusiones sólidas o generalizables.
+
+**Altura vs. máximo grado**
+
+```{r}
+user_grade_plot_altura <- user_grade_plot
+
+# Definir el tamaño de los intervalos en 5 cm
+intervalo_cm <- 0.05
+
+# Crear los puntos de corte desde el valor mínimo hasta el máximo de la altura
+puntos_corte <- seq(floor(min(user_grade_plot_altura$height)), ceiling(max(user_grade_plot_altura$height)), by = intervalo_cm)
+
+# Agrupar las alturas en intervalos de 5 cm
+user_grade_plot_altura$intervalo_altura <- cut(user_grade_plot_altura$height, breaks = puntos_corte, include.lowest = TRUE)
+
+user_grade_plot_altura <- user_grade_plot_altura %>% 
+  group_by(sex, intervalo_altura) %>% 
+  mutate(avg_grade = round(mean(grade_id, na.rm = TRUE),0),
+         grade_sd= round(sd(grade_id, na.rm = T),0),
+         lim_sup = avg_grade + grade_sd,
+         lim_inf = avg_grade - grade_sd) %>%
+  ungroup() %>% 
+  select(sex, height, grade_id, intervalo_altura, avg_grade, lim_inf, lim_sup)
+
+
+user_grade_plot_altura <- user_grade_plot_altura %>% 
+  mutate_at(vars('avg_grade','lim_sup', 'lim_inf'), ~ case_when(. == 48 ~ 47,
+                                                                . == 61 ~ 60,
+                                                                . == 74 ~ 73,
+                                                                TRUE  ~  .))
+user_grade_plot_altura <- na.omit(user_grade_plot_altura)
+
+graduacion_grafico <- grade %>% 
+  select(id, fra_routes)
+
+# Crear el vector nombrado
+graduacion_vector <- setNames(graduacion_grafico$fra_routes, graduacion_grafico$id)
+
+```
+
+```{r}
+# Visualización
+
+ggplot(data=filter(user_grade_plot_altura, height > 1.40 & height < 2.10), 
+       aes(x = intervalo_altura, y = avg_grade, group = sex, color = sex)) + 
+  geom_line(alpha = 1.5, aes(linetype = sex))+
+  geom_ribbon(aes(ymin = lim_inf, ymax = lim_sup, fill = sex),alpha = 0.15, color = "transparent") +
+
+  labs(
+    title = "Máximo grado escalado promedio vs. altura (cada 5 cms.)",
+    x = "Altura (en mts.)",
+    y = "Máximo grado escalado",
+    caption = "Fuente: 8a.nu"
+      ) +
+  scale_color_manual(values = c("Mujer" = "#FF88A8", "Hombre" = "#88C0FF")) + 
+  scale_fill_manual(values = c("Hombre" = "#3366CC", "Mujer" = "#FF88A8")) +
+  guides(color = guide_legend(title = NULL), linetype = guide_legend(title = NULL), fill = guide_legend(title = NULL)) +
+  scale_y_continuous(breaks = as.numeric(names(graduacion_vector)), labels = graduacion_vector) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+El gráfico revela una tendencia ligeramente negativa entre la altura y el grado máximo de escalada alcanzado tanto en hombres como en mujeres: a medida que aumenta la estatura, el rendimiento promedio tiende a disminuir.
+
+Si bien las diferencias no son extremas, se observa que los escaladores y escaladoras de menor estatura presentan, en promedio, mejores desempeños máximos en relación con sus contrapartes más altas. Esta relación podría explicarse parcialmente por ventajas biomecánicas como una menor masa corporal relativa.
+
+```{r}
+cantidad__inter <- user_grade_plot_altura %>% 
+  group_by(sex, intervalo_altura) %>% 
+  summarise(n = n())
+```
+
+
+```{r}
+# Calculamos la edad de cada usuario al comenzar a escalar
+
+user_grade_plot <- user_grade_plot %>% 
+  mutate(birth_year = year(birth),
+         birth_year = as.integer(birth_year),
+         age_climbing = started-birth_year) %>% 
+  filter(age_climbing>5) %>% 
+  arrange(age_climbing) %>% 
+  select(age_climbing, fra_routes, everything())
+
+# summary(user_grade_plot$age_climbing)
+
+ggplot(data = user_grade_plot, aes(x=age_climbing, color  = sex, fill = sex)) + 
+  geom_bar(alpha =0.3)+
+  scale_color_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  scale_fill_manual(values = c('#0066CC', '#FF9999'), name =" ")+
+  labs(title = "Distribución de la edad de los escaladores cuando comenzaron a escalar",
+    x = "Edad (en años).",
+    y = " ",
+    caption = "Fuente: 8a.nu") + theme_minimal() + theme(axis.title=element_text(size=8),legend.position = "right") + scale_x_continuous(breaks = c(10,20,30,40,50))
+
+```
+
+Se observa que la gran mayoría de los escaladores comenzaron a escalar entre los 18 y 22 años aproximadamente, habiendo los hombres, en promedio, comenzado relativamente antes que las mujeres.
+
+<!-- ## Análisis de escalada en boulder -->
+
+<!-- ```{r} -->
+
+<!-- user_grade_2 <- left_join(max_grade_boul_plot, user_ascents %>%  -->
+
+<!--                           select(user_id, sex, weight, height, bmi, age, country.x, experience),  -->
+
+<!--                         by = c('user_id' = 'user_id'))  -->
+
+<!-- #Cada registro responde a un usuario con su máx grado e información biológica. -->
+
+<!-- user_grade_2 <- user_grade_2 %>%  -->
+
+<!--   distinct(user_id, .keep_all = T) -->
+
+<!-- `%nin%` = Negate(`%in%`) -->
+
+<!-- #Filtramos por BMI para evitar outliers -->
+
+<!-- user_grade_plot_boul <- user_grade_2 %>%  -->
+
+<!--   filter(!is.na(bmi), !is.na(usa_boulders), bmi>=12, bmi<=40) %>%  -->
+
+<!--   group_by(usa_boulders, sex) %>%  -->
+
+<!--   mutate(n= n(), -->
+
+<!--          mean_bmi = mean(bmi), -->
+
+<!--          se_bmi = (sd(bmi)/sqrt(n)), -->
+
+<!--          inf_limit=mean_bmi-se_bmi, -->
+
+<!--          sup_limit=mean_bmi+se_bmi) -->
+
+<!-- user_grade_h_boul <- user_grade_plot_boul %>%  -->
+
+<!--   filter(sex == 'Hombre') -->
+
+<!-- user_grade_m_boul <- user_grade_plot_boul %>%  -->
+
+<!--   filter(sex == 'Mujer') -->
+
+<!-- ``` -->
+
+<!-- ### Máximo grado vs. BMI -->
+
+<!-- ```{r} -->
+
+<!-- ggplot(data = user_grade_plot_boul, aes(x = usa_boulders, y = mean_bmi, alpha =0.05, colour = sex)) +   -->
+
+<!--   geom_point(data = user_grade_h_boul, aes(x = usa_boulders, y = mean_bmi, alpha =0.5) , col = '#0066CC') + -->
+
+<!--   geom_line(data = user_grade_h_boul, aes(x = usa_boulders, y = mean_bmi, group =1, alpha =0.3), size =0.5,colour= "#0066CC") + -->
+
+<!--   geom_errorbar(data = user_grade_h_boul, aes(ymin=inf_limit, ymax=sup_limit)) + -->
+
+<!--   geom_point(data = user_grade_m_boul, aes(x = usa_boulders, y = mean_bmi, alpha = 0.5) , col = '#FF9999') + -->
+
+<!--   geom_line(data = user_grade_m_boul, aes(x = usa_boulders, y = mean_bmi, group =1, alpha =0.3), size =0.5, colour="#FF9999") + -->
+
+<!--   geom_errorbar(data= user_grade_m_boul, aes(ymin=inf_limit, ymax=sup_limit))+ -->
+
+<!--   scale_color_manual(values=c('#0066CC', '#FF9999')) + -->
+
+<!--   labs(title = 'Máximo grado de boulder vs. Body Mass Index', -->
+
+<!--        x= ' ', -->
+
+<!--        y= 'Body Mass Index', -->
+
+<!--        caption =  'las lineas unen las medias de BMI de cada grado.Fuente: 8a.nu', -->
+
+<!--        colour = NULL) + theme_minimal() +  -->
+
+<!--   theme(axis.text.x=element_text(angle=45,hjust=1)) +  -->
+
+<!--   guides(alpha = F, size= F)  -->
+
+<!-- ``` -->
+
+<!-- ### Máximo grado vs. altura -->
+
+<!-- ```{r} -->
+
+<!-- user_grade_plot_boul <- user_grade_plot_boul %>%  -->
+
+<!--   group_by(usa_boulders, sex) %>%  -->
+
+<!--   mutate(n_height= n(), -->
+
+<!--          mean_height = mean (height), -->
+
+<!--          se_height = (sd(height)/sqrt(n_height)), -->
+
+<!--          inf_limit_height=mean_height-se_height, -->
+
+<!--          sup_limit_height=mean_height+se_height) -->
+
+<!-- user_grade_h_boul <- user_grade_plot_boul %>%  -->
+
+<!--   filter(sex == 'Hombre') -->
+
+<!-- user_grade_m_boul <- user_grade_plot_boul %>%  -->
+
+<!--   filter(sex == 'Mujer') -->
+
+<!-- ggplot(data = filter(user_grade_plot_boul, height > 1.40, height <2.00), aes(x= usa_boulders, y = mean_height, colour= sex)) +  -->
+
+<!--   geom_point(data = user_grade_h_boul, aes(x = usa_boulders, y = mean_height, alpha =0.2) , col = '#0066CC') + -->
+
+<!--   geom_line(data = user_grade_h_boul, aes(x = usa_boulders, y = mean_height, group =1, alpha = 0.3), size=0.5, colour= "#0066CC") + -->
+
+<!--   geom_errorbar(data = user_grade_h_boul, aes(ymin=inf_limit_height, ymax=sup_limit_height)) + -->
+
+<!--   geom_point(data = user_grade_m_boul,aes(x = usa_boulders, y = mean_height, alpha = 0.2) , col = '#FF9999') + -->
+
+<!--   geom_line(data = user_grade_m_boul, aes(x = usa_boulders, y = mean_height, group =1, alpha = 0.3), size =0.5, colour="#FF9999") + -->
+
+<!--   geom_errorbar(data= user_grade_m_boul, aes(ymin=inf_limit_height, ymax=sup_limit_height))+ -->
+
+<!--   scale_color_manual(values=c('#0066CC', '#FF9999')) + -->
+
+<!--   labs(title = 'Máximo grado de escalada de boulder vs. altura', -->
+
+<!--        x= ' ', -->
+
+<!--        y= 'Altura (en mts)', -->
+
+<!--        caption =  'Nota: las lineas unen las medias de altura de cada grado. Fuente: 8a.nu', -->
+
+<!--        colour = NULL) + theme_minimal() +  -->
+
+<!--   theme(axis.text.x=element_text(angle=45,hjust=1)) +  -->
+
+<!--   guides(alpha = F, size= F) -->
+
+<!-- ``` -->
+
+<!-- ### Máximo grado vs. peso -->
+
+<!-- ```{r} -->
+
+<!-- user_grade_plot_boul <- user_grade_plot_boul %>%  -->
+
+<!--   group_by(usa_boulders, sex) %>%  -->
+
+<!--   mutate(n_weight= n(), -->
+
+<!--          mean_weight = mean (weight), -->
+
+<!--          se_weight = (sd(weight)/sqrt(n_weight)), -->
+
+<!--          inf_limit_weight=mean_weight-se_weight, -->
+
+<!--          sup_limit_weight=mean_weight+se_weight) -->
+
+<!-- user_grade_h_boul <- user_grade_plot_boul %>%  -->
+
+<!--   filter(sex == 'Hombre') -->
+
+<!-- user_grade_m_boul <- user_grade_plot_boul %>%  -->
+
+<!--   filter(sex == 'Mujer') -->
+
+<!-- ggplot(data = user_grade_plot_boul, aes(x=usa_boulders, y = mean_weight, colour = sex)) +  -->
+
+<!--   geom_point(data = user_grade_h_boul, aes(x = usa_boulders, y = mean_weight, alpha =0.2) , col = '#0066CC') + -->
+
+<!--   geom_line(data = user_grade_h_boul, aes(x = usa_boulders, y = mean_weight, group =1, alpha=0.3), size=0.5, colour= "#0066CC") + -->
+
+<!--   geom_errorbar(data = user_grade_h_boul, aes(ymin=inf_limit_weight, ymax=sup_limit_weight)) + -->
+
+<!--   geom_point(data = user_grade_m_boul, aes(x = usa_boulders, y = mean_weight, alpha = 0.2) , col = '#FF9999') + -->
+
+<!--   geom_line(data = user_grade_m_boul, aes(x = usa_boulders, y = mean_weight, group =1, alpha = 0.3), size =0.5,colour="#FF9999") + -->
+
+<!--   geom_errorbar(data = user_grade_m_boul, aes(ymin=inf_limit_weight, ymax=sup_limit_weight))+ -->
+
+<!--   scale_color_manual(values=c('#0066CC', '#FF9999')) + -->
+
+<!--   labs(title = 'Máximo grado de escalada de boulder vs. peso', -->
+
+<!--        x= ' ', -->
+
+<!--        y= 'Peso (en Kg)', -->
+
+<!--        caption =  'Nota: las lineas unen las medias de peso de cada grado. Fuente: 8a.nu', -->
+
+<!--        colour = NULL) +  -->
+
+<!--   guides(alpha = F, size= F)+theme_minimal() +  -->
+
+<!--   theme(axis.text.x=element_text(angle=45,hjust=1)) +  -->
+
+<!--   guides(alpha = F, size= F) -->
+
+<!-- ``` -->
+
+Dado que la progresión en el grado máximo alcanzado parece estar influida por múltiples factores, se procedió a ajustar modelos de regresión múltiple para estimar su impacto específico. En particular, se analizaron variables como la edad, la experiencia, la altura y el índice de masa corporal, tanto para hombres como para mujeres.
+
+**Modelización. Regresión múltiple**
+
+*Escalada deportiva (Hombres)*
+
+```{r}
+#Ya está filtrado por bmi entre 12 y 40, altura entre 1.22 y 2.20 cm, personas menores a 87 años.
+
+base_regre_h <- user_grade_plot %>% 
+  filter(sex == "Hombre")
+
+#Limpiamos los casos mal codificados de experience, revisar si hay q excluir o no
+# base_regre_h <- user_grade_h %>%
+#   filter(experience<age)
+
+base_regre_h <- base_regre_h %>%
+  filter(method_id == "redpoint")
+
+#Correlación entre altura y peso (lo cual es lógico)
+# cor(base_regre_h$weight,base_regre_h$height)
+
+base_regre_h$grade_id <- as.numeric(base_regre_h$grade_id)
+```
+
+```{r}
+#Estimación
+mod_h1 <- lm(grade_id ~  bmi + height + experience +  age, data = base_regre_h)
+summary(mod_h1)
+```
+
+```{r}
+# library(scatterplot3d)
+# 
+# s3d=scatterplot3d(x=base_regre_h$bmi, y=base_regre_h$height, z=base_regre_h$grade_id,
+#               xlab="Body Mass Index", ylab="Altura (en mts.)",
+#                   zlab="Máximo grado escalado",
+#               pch=16, highlight.3d=TRUE, angle=35,type="h")
+```
+
+A partir de los resultados obtenidos, es posible sostener que a mayor bmi y altura, en promedio, se obtiene un menor grado escalado. Para poder conocer que variable afecta más sobre el máximo grado escalado, debemos estandarizar las variables predictoras para llevarlas a una misma unidad de medida.
+
+```{r}
+# Predictores estandarizados
+mod_h2_estandarizado <- train(grade_id ~ bmi + height + experience + age,
+                              data = base_regre_h,
+                              method ="lm",
+                              preProcess = c("scale", "center"))
+
+summary(mod_h2_estandarizado)
+
+```
+
+Los resultados del modelo de regresión lineal múltiple con variables predictoras estandarizadas indican que:
+
+La experiencia en escalada es el predictor con mayor efecto positivo sobre el grado máximo alcanzado ($\hat{\beta}$= 4.54), lo cual es coherente con la hipótesis de que la acumulación de práctica y conocimiento técnico contribuye significativamente al rendimiento.
+
+La edad muestra un efecto negativo considerable ($\hat{\beta}$ = -2.99), lo que sugiere que, independientemente de la experiencia acumulada, el paso del tiempo podría afectar negativamente el desempeño, posiblemente debido a factores fisiológicos o psicológicos asociados al envejecimiento.
+
+El índice de masa corporal (BMI) ($\hat{\beta}$ = -1.44) y la altura ($\hat{\beta}$ = -0.83) también presentan asociaciones negativas con el grado máximo alcanzado, aunque de menor magnitud. Estos efectos podrían estar vinculados a consideraciones biomecánicas, como la relación entre masa corporal y fuerza relativa o el impacto del centro de gravedad y el alcance.
+
+Todos los coeficientes resultaron estadísticamente significativos (p \< 0.001), lo que valida la inclusión de estas variables en el modelo. El coeficiente de determinación ajustado fue de R² = 0.1885, indicando que el modelo explica aproximadamente el 18.9% de la variabilidad observada en el grado máximo escalado.
+
+No obstante, este porcentaje relativamente bajo sugiere que existen otros factores determinantes del rendimiento que no han sido capturados en el modelo. Entre ellos, se destacan variables psicológicas (como la tolerancia al miedo, la motivación y la gestión del estrés), así como capacidades físicas específicas de la escalada (como la fuerza máxima de dedos, la resistencia muscular local, la movilidad y la técnica gestual). Incorporar estas dimensiones en futuros modelos podría mejorar sustancialmente la capacidad explicativa y la comprensión integral del rendimiento en escalada deportiva.
+
+**Supuestos**
+
+```{r}
+residuos <- resid(mod_h2_estandarizado)
+predichos <- fitted(mod_h2_estandarizado)
+```
+
+*Normalidad*
+
+```{r}
+#Comparamos con una distribución normal de igual desvío estándar residual a los datos:
+par(mfrow=c(2,2))
+hist(residuos, col="yellow", freq=F)
+lines(density(residuos), col="blue", lw=3)
+normal=rnorm(mean=0, sd=summary(mod_h2_estandarizado)$sigma, n=length(summary(mod_h2_estandarizado)$residuals))
+hist(normal, col="green", freq=F)
+lines(density(residuos), col="blue", lw=3)
+boxplot(residuos, bty="l", range=1.5, col="yellow", horizontal=T, xlab="residuos")
+boxplot(normal, bty="l", range=1.5, col="green", horizontal=T, xlab="normal")
+
+# qqplot
+par(mfrow=c(1,2))
+qqnorm(residuos, main = "Qqplot de residuos")
+qqline(residuos)
+
+# Comparemos con una normal:
+qqnorm(normal, main = "Qqplot de una distribución normal")
+qqline(normal)
+
+# test analiticos de normalidad
+nortest::lillie.test(residuos)
+```
+
+
+*Homocedasticidad e independencia*
+
+
+```{r}
+plot(predichos, residuos, main = "Residuos vs. predichos")
+abline(a=0,b=0, col="violet", lw=2)
+```
+
+*Sesgo*
+
+```{r}
+# sesgo
+
+plot(predichos, base_regre_h$grade_id, main = "Predichos vs. máximo grado de escalada",
+     ylab = "Máx. grado")
+
+abline(a=0,b=1,lwd=2, col = "blue")
+```
+
+*Multicolinealidad*
+
+*Inflación de la varianza*
+
+```{r}
+car::vif(mod_h2_estandarizado$finalModel)
+```
+**Mujeres**
+
+
+```{r}
+base_regre_m <- user_grade_plot %>% 
+  filter(sex == "Mujer")
+
+#Limpiamos los casos mal codificados de experience, revisar si hay q excluir o no
+# base_regre_h <- user_grade_h %>%
+#   filter(experience<age)
+
+base_regre_m <- base_regre_m %>%
+  filter(method_id == "redpoint")
+
+#Correlación entre altura y peso (lo cual es lógico)
+# cor(base_regre_m$weight,base_regre_m$height)
+
+base_regre_m$grade_id <- as.numeric(base_regre_m$grade_id)
+```
+
+```{r}
+#Estimación
+# mod_m1 <- lm(grade_id ~  bmi + height + experience +  age, data = base_regre_m)
+# summary(mod_m1)
+```
+
+```{r}
+# Predictores estandarizados
+mod_m2_estandarizado <- train(grade_id ~ bmi + height + experience + age,
+                              data = base_regre_m,
+                              method ="lm",
+                              preProcess = c("scale", "center"))
+
+summary(mod_m2_estandarizado)
+
+```
+
+El modelo ajustado para mujeres muestra que la experiencia es el predictor con mayor efecto positivo sobre el grado máximo escalado ($\hat{\beta}$ = 4.28, p \< 0.001), confirmando que una mayor práctica acumulada se asocia con mejores desempeños. Por otro lado, tanto la edad ($\hat{\beta}$ = -2.53, p \< 0.001), el BMI ($\hat{\beta}$ = -1.06, p \< 0.001) y la altura ($\hat{\beta}$ = -0.53, p = 0.03) ejercen efectos negativos, indicando que un mayor envejecimiento, mayor índice de masa corporal y mayor altura están relacionados con una disminución en el rendimiento, aunque la magnitud del efecto de la altura es más débil en comparación con las otras variables.
+
+En comparación con el modelo para hombres, donde los coeficientes estandarizados para experiencia ($\hat{\beta}$ ≈ 4.54) y edad ($\hat{\beta}$ ≈ -2.99) también fueron los más relevantes, se observa una consistencia en la dirección y relevancia de estos predictores en ambos sexos. Sin embargo, el efecto negativo del BMI y la altura parece ser menos pronunciado en mujeres que en hombres, sugiriendo diferencias potenciales en cómo las características físicas influyen en el desempeño de escalada entre sexos.
+
+El ajuste global del modelo en mujeres (R² ajustado = 0.176) es similar al observado en hombres (R² ajustado ≈ 0.188), indicando que las variables consideradas explican una proporción comparable de la variabilidad en el grado máximo alcanzado en ambos grupos.
+
+Estos hallazgos respaldan la importancia de considerar diferencias sexuales en el análisis del rendimiento en escalada, especialmente en cómo factores fisiológicos pueden tener impactos diferenciados. Asimismo, sugieren que modelos separados para cada sexo son apropiados para capturar estas particularidades y mejorar la precisión interpretativa. Cabe destacar que otros factores no incluidos en el modelo —como fuerza específica, técnica y aspectos psicológicos— probablemente contribuyen también de forma importante al rendimiento y deberían considerarse en análisis futuros para mejorar el ajuste del modelo.
+
+**Supuestos**
+
+```{r}
+residuos_m <- resid(mod_m2_estandarizado)
+predichos_m <- fitted(mod_m2_estandarizado)
+```
+
+*Normalidad*
+
+```{r}
+# Comparamos con una distribución normal de igual desvío estándar residual a los datos:
+par(mfrow=c(2,2))
+hist(residuos_m, col="yellow", freq=F)
+lines(density(residuos_m), col="blue", lw=3)
+normal_m=rnorm(mean=0, sd=summary(mod_m2_estandarizado)$sigma, n=length(summary(mod_m2_estandarizado)$residuals))
+hist(normal_m, col="green", freq=F)
+lines(density(residuos_m), col="blue", lw=3)
+boxplot(residuos_m, bty="l", range=1.5, col="yellow", horizontal=T, xlab="residuos")
+boxplot(normal_m, bty="l", range=1.5, col="green", horizontal=T, xlab="normal")
+```
+
+```{r}
+# qqplot
+par(mfrow=c(1,2))
+qqnorm(residuos_m, main = "Qqplot de residuos")
+qqline(residuos_m)
+
+#Comparemos con una normal:
+qqnorm(normal_m, main = "Qqplot de una distribución normal")
+qqline(normal_m)
+
+##test analiticos de normalidad
+#nortest::lillie.test(residuos_m)
+```
+
+*Homocedasticidad e independencia*
+
+```{r}
+plot(predichos_m, residuos_m, main = "Residuos vs. predichos")
+abline(a=0,b=0, col="violet", lw=2)
+```
+
+*Multicolinealidad*
+
+*Inflación de la varianza*
+
+```{r}
+car::vif(mod_h2_estandarizado$finalModel)
+```
+
+*Sesgo*
+
+```{r}
+#Para ver sesgo
+plot(predichos_m, base_regre_m$grade_id, main = "Predichos vs. máximo grado de escalada",
+     ylab = "Máx. grado")
+abline(a=0,b=1,lwd=2, col = "blue")
+
+```
+
+
+**Evaluación de los supuestos de ambos modelos (hombre y mujer)**
+
+La inspección visual de los gráficos diagnósticos sugiere que el modelo cumple razonablemente con los supuestos del modelo de regresión lineal múltiple:
+
+- Normalidad: el histograma y el boxplot de los residuos muestran una distribución aproximadamente simétrica, sin asimetrías marcadas ni presencia de valores extremos relevantes. El QQ-plot refuerza esta apreciación, con los residuos alineados en gran parte con la distribución normal teórica, salvo leves desvíos en las colas.
+
+- Independencia: no se observan patrones sistemáticos ni autocorrelación evidente en los residuos ordenados, lo que sugiere independencia entre observaciones.
+
+- Homocedasticidad: el gráfico de residuos versus valores ajustados muestra una dispersión homogénea, sin indicios claros de varianza creciente o decreciente.
+
+- Ausencia de multicolinealidad: se analizaron los factores de inflación de la varianza (VIF) para los predictores, y en todos los casos resultaron en valores bajos (típicamente < 5), lo que indica que no existe colinealidad significativa entre las variables independientes incluidas en el modelo.
+
+- Sesgo: aunque no es un supuesto formal del modelo, el gráfico de sesgo de los residuos permite evaluar si el modelo tiende a sobreestimar o subestimar sistemáticamente ciertos valores de la variable objetivo. En este caso, el sesgo se distribuye de manera equilibrada en torno a cero, lo cual sugiere que el modelo no presenta un sesgo estructural relevante y que los errores de predicción son simétricos en promedio.
+
+
+<!-- ## Boulder -->
+
+<!-- ### Hombres -->
+
+<!-- ```{r} -->
+
+<!-- #Ya está filtrado por bmi entre 12 y 40, altura entre 1.22 y 2.20 cm, personas menores a 87 años. -->
+
+<!-- summary(user_grade_h$experience) -->
+
+<!-- #Limpiamos los casos mal codificados de experience -->
+
+<!-- base_regre_h <- user_grade_h %>% -->
+
+<!--   filter(experience<age) -->
+
+<!-- #Correlación entre altura y peso (lo cual es lógico) -->
+
+<!-- cor(base_regre_h$weight,base_regre_h$height) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- #Estimación -->
+
+<!-- mod_h <- lm(max_grade ~  weight + height + experience + age, data = base_regre_h) -->
+
+<!-- summary(mod_h) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- #Supuestos -->
+
+<!-- residuos <- resid(mod_h) -->
+
+<!-- predichos <- fitted(mod_h) -->
+
+<!-- #Normalidad -->
+
+<!-- #Comparamos con una distribución normal de igual desvío estándar residual a los datos: -->
+
+<!-- par(mfrow=c(2,2)) -->
+
+<!-- hist(residuos, col="yellow", freq=F) -->
+
+<!-- lines(density(residuos), col="blue", lw=3) -->
+
+<!-- normal=rnorm(mean=0, sd=summary(mod_h)$sigma, n=length(summary(mod_h)$residuals)) -->
+
+<!-- hist(normal, col="green", freq=F) -->
+
+<!-- lines(density(residuos), col="blue", lw=3) -->
+
+<!-- boxplot(residuos, bty="l", range=1.5, col="yellow", horizontal=T, xlab="residuos") -->
+
+<!-- boxplot(normal, bty="l", range=1.5, col="green", horizontal=T, xlab="normal") -->
+
+<!-- #qqplot -->
+
+<!-- par(mfrow=c(1,2)) -->
+
+<!-- qqnorm(residuos, main = "Qqplot de residuos") -->
+
+<!-- qqline(residuos) -->
+
+<!-- #Comparemos con una normal: -->
+
+<!-- qqnorm(normal, main = "Qqplot de una distribución normal") -->
+
+<!-- qqline(normal) -->
+
+<!-- ##test analiticos de normalidad -->
+
+<!-- nortest::lillie.test(residuos) -->
+
+<!-- #homocedasticidad e independencia -->
+
+<!-- plot(predichos, residuos, main = "Residuos vs. predichos") -->
+
+<!-- abline(a=0,b=0, col="violet", lw=2) -->
+
+<!-- #Para ver sesgo -->
+
+<!-- plot(predichos, base_regre_h$max_grade, main = "Predichos vs. máximo grado de escalada", -->
+
+<!--      ylab = "Máx. grado") -->
+
+<!-- abline(a=0,b=1,lwd=2, col = "blue") -->
+
+<!-- ``` -->
+
+<!-- ### Mujeres -->
+
+<!-- ```{r} -->
+
+<!-- summary(user_grade_m$experience) -->
+
+<!-- #Limpiamos los casos mal codificados de experience -->
+
+<!-- base_regre_m <- user_grade_m %>% -->
+
+<!--   filter(experience<age) -->
+
+<!-- #Correlación entre altura y peso (lo cual es lógico) -->
+
+<!-- cor(base_regre_m$weight,base_regre_m$height) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- #Estimación -->
+
+<!-- mod_m <- lm(max_grade ~  weight + height + experience + age, data = base_regre_m) -->
+
+<!-- summary(mod_m) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- #Supuestos -->
+
+<!-- residuos_m <- resid(mod_m) -->
+
+<!-- predichos_m <- fitted(mod_m) -->
+
+<!-- #Normalidad -->
+
+<!-- #Comparamos con una distribución normal de igual desvío estándar residual a los datos: -->
+
+<!-- par(mfrow=c(2,2)) -->
+
+<!-- hist(residuos_m, col="yellow", freq=F) -->
+
+<!-- lines(density(residuos_m), col="blue", lw=3) -->
+
+<!-- normal_m=rnorm(mean=0, sd=summary(mod_m)$sigma, n=length(summary(mod_m)$residuals)) -->
+
+<!-- hist(normal_m, col="green", freq=F) -->
+
+<!-- lines(density(residuos_m), col="blue", lw=3) -->
+
+<!-- boxplot(residuos_m, bty="l", range=1.5, col="yellow", horizontal=T, xlab="residuos") -->
+
+<!-- boxplot(normal_m, bty="l", range=1.5, col="green", horizontal=T, xlab="normal") -->
+
+<!-- #qqplot -->
+
+<!-- par(mfrow=c(1,2)) -->
+
+<!-- qqnorm(residuos_m, main = "Qqplot de residuos") -->
+
+<!-- qqline(residuos_m) -->
+
+<!-- #Comparemos con una normal: -->
+
+<!-- qqnorm(normal_m, main = "Qqplot de una distribución normal") -->
+
+<!-- qqline(normal_m) -->
+
+<!-- ##test analiticos de normalidad -->
+
+<!-- nortest::lillie.test(residuos_m) -->
+
+<!-- #homocedasticidad e independencia -->
+
+<!-- plot(predichos_m, residuos_m, main = "Residuos vs. predichos") -->
+
+<!-- abline(a=0,b=0, col="violet", lw=2) -->
+
+<!-- #Para ver sesgo -->
+
+<!-- plot(predichos_m, base_regre_m$max_grade, main = "Predichos vs. máximo grado de escalada", -->
+
+<!--      ylab = "Máx. grado") -->
+
+<!-- abline(a=0,b=1,lwd=2, col = "blue") -->
+
+<!-- ``` -->

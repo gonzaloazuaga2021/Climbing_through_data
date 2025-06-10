@@ -26,7 +26,7 @@ Distribución de grados máximos:
 Tiempo de progresión:
   
 - 70% de escaladores alcanzan 7a en 2-3 años
-- 8a requiere en promedio 9 años de experiencia
+- 8a requiere en promedio 8/9 años de experiencia
 - Mujeres muestran progresión más rápida en grados iniciales
 
 Relación física-rendimiento:

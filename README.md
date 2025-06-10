@@ -18,7 +18,7 @@ Explorar los factores que influyen en el rendimiento de los escaladores, con foc
 
 Hallazgos Clave
 
-Distribución de grados máximos:
+Distribución de grados máximos escalados:
 
 - Escalada deportiva: 8a es el grado más frecuente
 - Boulder: V6 es el grado más común

@@ -48,3 +48,10 @@ Consideraciones Metodológicas:
   📅 Actualización: Los datos reflejan el estado hasta septiembre de 2017
 
   🧪 Enfoque estadístico: Modelos de regresión múltiple con validación de supuestos
+
+## 🔍 Visualización del análisis
+
+Puedes acceder a la versión interactiva del análisis haciendo clic en el siguiente enlace:
+
+👉 [Abrir análisis en GitHub Pages](https://gonzaloazuaga2021.github.io/Climbing_through_data/)
+

@@ -1,8 +1,19 @@
 ---
 title: "Escalando a través de los datos"
-subtitle: "Análisis de la base de 8a.nu"
 author: "Gonzalo Azuaga"
-output: html_document
+subtitle: Análisis de la base de 8a.nu
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: zenburn
+    df_print: paged
+    includes:
+      in_header: header.html
+    css: estilo.css
+  pdf_document:
+    toc: true
 ---
 
 ```{r, results='hide', include=FALSE}
@@ -17,12 +28,14 @@ knitr::opts_chunk$set(
 library(tidyverse)
 library(lubridate)
 library(skimr)
+library(caret)
 library(gridExtra)
 library(grid)
-library(caret)
+library(broom)
+library(knitr)
 ```
 
-**Introducción**
+# Introducción
 
 La idea de este Rmarkdown es poder analizar la mayor base de datos de escalada que se encuentra en libre disposición en la actualidad (**The Climbing Log Book Data** creada por David Cohen). La misma puede descargarse del siguiente link: [aqui](https://www.kaggle.com/datasets/dcohen21/8anu-climbing-logbook). Los datos fueron obtenidos a partir de scrappear la página www.8a.nu y corresponden al 13 de septiembre de 2017.
 
@@ -56,7 +69,7 @@ Estructura de las bases
 # glimpse(grade)
 ```
 
-**EDA**
+# Exploración de los datos
 ```{r}
 skim(user)
 ```
@@ -117,7 +130,7 @@ user_ascents <- user_ascents %>%
 
 ```
 
-**Análisis gráfico de variables cuantitativas de interés del dataframe**
+## Exploración visual de las variables cuantitativas de interés
 
 ```{r}
 a <-  ggplot(data = user_ascents, aes(x=height, color  = sex, fill = sex)) + 
@@ -161,13 +174,14 @@ grid.arrange(a,b,c,d, ncol=2, nrow=2, widths = c(9,9), heights = c(11,11),
      hjust = 0.6),
     bottom = textGrob(
     "Fuente: 8a.nu",
-    gp = gpar(fontface = "bold", fontsize = 8),
+    gp = gpar(fontsize = 8),
     hjust = 1,
     x = 1))
 ```
 
+A partir del gráfico anterior se observa que las distribuciones de las variables tienden a ser bastante normales, salvo en el caso del peso de las mujeres donde la distribución tiende a ser más asimétrica (asimetría positiva) que para los hombres. Lo que significa que la mayor parte de las mujeres reporta un peso menor a la media.
 
-**Estimación del grado máximo escalado por usuario**
+## Estimación del grado máximo escalado por usuario
 
 Para cada usuario se identificó el máximo grado alcanzado en modalidad redpoint y onsight/flash, tanto en escalada deportiva como en boulder. Junto con el grado, se extrajo el año en que fue registrado ese ascenso como representación del momento de mayor rendimiento declarado.
 
@@ -179,7 +193,6 @@ A partir de esa información, se estimó el tiempo requerido para alcanzar dicho
 Este indicador permite evaluar la velocidad de progresión individual hasta el mayor nivel registrado en la base de datos. Se excluyeron valores extremos o inconsistentes (por ejemplo, tiempos negativos o mayores a 30 años) para evitar distorsión en los resultados.
 
 ```{r}
-
 options(scipen = 99)
 
 # Por usuario, tipo de escalada y método nos quedamos el grado mayor escalado y en el menor año.
@@ -246,7 +259,7 @@ ggplot(data = filter(max_grade_boul_plot, !is.na(usa_boulders) & method_id=="red
 
 A partir de ambos gráficos se observa que la gran mayoría de las personas reportaron como su máximo grado de escalada en roca el 8a, mientras que en boulder V6.
 
-**Análisis de Escalada en roca**
+# Análisis de Escalada en roca
 
 ```{r, results='hide'}
 # Sobre la base de máximo grado alcanzado en el mínimo año por usuario
@@ -596,7 +609,7 @@ ggsave('C:/Gonzalo/8a.nu/escalada_analisis/Graficos/g_vista_flash.jpg', g_vista_
 
 Este gráfico muestra la relación entre el grado máximo alcanzado en modalidad redpoint (ensayado) y el grado máximo en modalidad onsight/flash. La concentración de puntos a lo largo de la diagonal es esperable: quienes alcanzan un alto grado ensayado tienden a mostrar también un alto rendimiento a vista/flash.
 
-Sin embargo, también se observa una notable dispersión alrededor de esa diagonal. Esta variabilidad indica que, para un mismo grado redpoint, existen diferencias marcadas en el grado alcanzado a vista, y viceversa. Los límites superior e inferior representan los valores máximos y mínimos observados para cada nivel redpoint, no un desvío estadístico.
+Sin embargo, también se observa una notable dispersión alrededor de esa diagonal. Esta variabilidad indica que, para un mismo grado redpoint, existen diferencias marcadas en el grado alcanzado a vista, y viceversa. Los límites superior e inferior representan los valores máximos y mínimos observados para cada nivel redpoint.
 
 ```{r}
 #Filtramos por BMI para evitar outliers
@@ -606,6 +619,9 @@ user_grade_plot <- max_grade_sim %>%
   mutate(mean_bmi = mean(bmi),
          sd_bmi = sd(bmi))
 ```
+
+
+## Relación entre características antropométricas y grado escalado
 
 ```{r, message=FALSE, warning=FALSE}
  ggplot(data = filter(user_grade_plot,fra_routes %nin% c('5a','5b','5c', '9b+','9c')), aes(x = fra_routes, y = mean_bmi, group = sex, color = sex)) +  geom_line(alpha = 1.5, aes(linetype = sex)) +
@@ -634,8 +650,6 @@ user_grade_plot %>%
 ```
 
 Se observa que dos personas reportaron haber escalado 8a+ como máximo grado y tienen un peso de 88 kg y 100 kg, midiendo 1,50 mts y 1,74 mts respectivamente, lo que genera valores bastante elevados de BMI comparados con el resto de las mujeres que escalaron dicho grado.
-
-*Máximo grado vs. altura*
 
 ```{r}
 # Hombres
@@ -829,8 +843,6 @@ En el caso de los hombres, se observa que aquellos con menor estatura (aproximad
 
 En el caso de las mujeres, se optó por no presentar este análisis debido al menor volumen de registros disponibles y al alto grado de ruido observado en los datos, lo que impide extraer conclusiones sólidas o generalizables.
 
-**Altura vs. máximo grado**
-
 ```{r}
 user_grade_plot_altura <- user_grade_plot
 
@@ -901,7 +913,7 @@ cantidad__inter <- user_grade_plot_altura %>%
   summarise(n = n())
 ```
 
-
+## Edad
 ```{r}
 # Calculamos la edad de cada usuario al comenzar a escalar
 
@@ -1128,11 +1140,10 @@ Se observa que la gran mayoría de los escaladores comenzaron a escalar entre lo
 
 <!-- ``` -->
 
-Dado que la progresión en el grado máximo alcanzado parece estar influida por múltiples factores, se procedió a ajustar modelos de regresión múltiple para estimar su impacto específico. En particular, se analizaron variables como la edad, la experiencia, la altura y el índice de masa corporal, tanto para hombres como para mujeres.
+Dado que la progresión en el grado máximo alcanzado parece estar influida por múltiples factores, se procedió a ajustar **modelos de regresión múltiple** para estimar su impacto específico. En particular, se analizaron variables como la edad, la experiencia, la altura y el índice de masa corporal, tanto para hombres como para mujeres.
 
-**Modelización. Regresión múltiple**
-
-*Escalada deportiva (Hombres)*
+# Modelado y patrones
+## Hombres
 
 ```{r}
 #Ya está filtrado por bmi entre 12 y 40, altura entre 1.22 y 2.20 cm, personas menores a 87 años.
@@ -1156,7 +1167,26 @@ base_regre_h$grade_id <- as.numeric(base_regre_h$grade_id)
 ```{r}
 #Estimación
 mod_h1 <- lm(grade_id ~  bmi + height + experience +  age, data = base_regre_h)
-summary(mod_h1)
+
+tidy_modelo <- tidy(mod_h1)
+tidy_modelo <- tidy_modelo %>%
+  mutate(term = recode(term,
+                       `(Intercept)` = "Intercepto",
+                       `bmi` = "Índice de Masa Corporal (BMI)",
+                       `height` = "Altura (en mts.)",
+                       `experience` = "Experiencia (en años)",
+                       `age` = "Edad (en años)")) %>%
+  select(term, estimate, std.error, statistic, p.value) %>%
+  mutate(
+    p.value = case_when(p.value < 2e-16 ~ "< 2e-16",
+                        TRUE ~ formatC(p.value, digits = 4, format = "e")
+    ),
+    estimate = round(estimate, 3),
+    std.error = round(std.error, 3),
+    statistic = round(statistic, 2)
+  )
+
+kable(tidy_modelo, caption = "Resultados del modelo lineal")
 ```
 
 ```{r}
@@ -1177,8 +1207,30 @@ mod_h2_estandarizado <- train(grade_id ~ bmi + height + experience + age,
                               method ="lm",
                               preProcess = c("scale", "center"))
 
-summary(mod_h2_estandarizado)
+tidy_modelo2 <- tidy(mod_h2_estandarizado$finalModel)
+tidy_modelo2 <- tidy_modelo2 %>%
+  mutate(term = recode(term,
+                       `(Intercept)` = "Intercepto",
+                       `bmi` = "Índice de Masa Corporal (BMI)",
+                       `height` = "Altura (en mts.)",
+                       `experience` = "Experiencia (en años)",
+                       `age` = "Edad (en años)")) %>%
+  select(term, estimate, std.error, statistic, p.value) %>%
+  mutate(
+    p.value = case_when(p.value < 2e-16 ~ "< 2e-16",
+                        TRUE ~ formatC(p.value, digits = 4, format = "e")
+    ),
+    estimate = round(estimate, 3),
+    std.error = round(std.error, 3),
+    statistic = round(statistic, 2)
+  )
 
+kable(tidy_modelo2, caption = "Resultados del modelo lineal estandarizado")
+
+kable(
+  glance(mod_h2_estandarizado$finalModel)[, c("r.squared", "adj.r.squared")],
+  caption = "R² del modelo lineal estandarizado"
+)
 ```
 
 Los resultados del modelo de regresión lineal múltiple con variables predictoras estandarizadas indican que:
@@ -1253,8 +1305,8 @@ abline(a=0,b=1,lwd=2, col = "blue")
 ```{r}
 car::vif(mod_h2_estandarizado$finalModel)
 ```
-**Mujeres**
 
+## Mujeres
 
 ```{r}
 base_regre_m <- user_grade_plot %>% 
@@ -1286,8 +1338,31 @@ mod_m2_estandarizado <- train(grade_id ~ bmi + height + experience + age,
                               method ="lm",
                               preProcess = c("scale", "center"))
 
-summary(mod_m2_estandarizado)
 
+
+tidy_modelo3 <- tidy(mod_m2_estandarizado$finalModel)
+tidy_modelo3 <- tidy_modelo3 %>%
+  mutate(term = recode(term,
+                       `(Intercept)` = "Intercepto",
+                       `bmi` = "Índice de Masa Corporal (BMI)",
+                       `height` = "Altura (en mts.)",
+                       `experience` = "Experiencia (en años)",
+                       `age` = "Edad (en años)")) %>%
+  select(term, estimate, std.error, statistic, p.value) %>%
+  mutate(
+    p.value = case_when(p.value < 2e-16 ~ "< 2e-16",
+                        TRUE ~ formatC(p.value, digits = 4, format = "e")
+    ),
+    estimate = round(estimate, 3),
+    std.error = round(std.error, 3),
+    statistic = round(statistic, 2)
+  )
+
+kable(tidy_modelo3, caption = "Resultados del modelo lineal estandarizado")
+
+kable(
+  glance(mod_m2_estandarizado$finalModel)[, c("r.squared", "adj.r.squared")],
+  caption = "R² del modelo lineal estandarizado")
 ```
 
 El modelo ajustado para mujeres muestra que la experiencia es el predictor con mayor efecto positivo sobre el grado máximo escalado ($\hat{\beta}$ = 4.28, p \< 0.001), confirmando que una mayor práctica acumulada se asocia con mejores desempeños. Por otro lado, tanto la edad ($\hat{\beta}$ = -2.53, p \< 0.001), el BMI ($\hat{\beta}$ = -1.06, p \< 0.001) y la altura ($\hat{\beta}$ = -0.53, p = 0.03) ejercen efectos negativos, indicando que un mayor envejecimiento, mayor índice de masa corporal y mayor altura están relacionados con una disminución en el rendimiento, aunque la magnitud del efecto de la altura es más débil en comparación con las otras variables.

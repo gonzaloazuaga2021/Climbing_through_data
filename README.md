@@ -43,7 +43,7 @@ Modelos predictivos:
 
 Consideraciones Metodológicas:
 
-  🎯 Sesgo muestral: Los datos sobre-representan a escaladores serios y de Europa
+  🎯 Sesgo muestral: Los datos sobrerepresentan a escaladores más experimentasdos y principalmente de Europa
 
   📅 Actualización: Los datos reflejan el estado hasta septiembre de 2017
 
